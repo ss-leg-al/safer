@@ -1,0 +1,17 @@
+# Backend / agent stack — install in the 'sam3' conda env (Python 3.12).
+# Meta SAM3 + PyTorch are installed separately (see README §1, §2).
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+python-dotenv
+langgraph
+langchain-openai
+langchain-core
+openai
+# numpy must be <2 because Meta SAM3 requires numpy<2,>=1.26
+numpy>=1.26,<2
+# opencv-contrib-python (NOT opencv-python) — CSRT tracker still used as fallback
+# in some code paths and binary mask helpers benefit from contrib utilities.
+opencv-contrib-python==4.10.0.84
+reportlab
