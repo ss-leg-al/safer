@@ -10,6 +10,7 @@ class JobStore:
     video_path: str | None = None
     frames_dir: str | None = None
     sample_frame: str | None = None
+    scene_analyze_count: int = 0
     scene_type: str | None = None
     expected_pii: list[str] = field(default_factory=list)
     detected_objects: list[dict] = field(default_factory=list)

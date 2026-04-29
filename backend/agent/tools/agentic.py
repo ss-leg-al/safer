@@ -180,10 +180,19 @@ def analyze_scene(job_id: str) -> str:
     Call AFTER extract_frames, BEFORE detect_pii. Returns scene_type and a list of expected PII types
     (subset of: face, document, screen, nameplate, id_card)."""
     store = get_store(job_id)
-    if not store.sample_frame:
-        return "ERROR: no sample frame available. Call extract_frames first."
+    if not store.frames_dir:
+        return "ERROR: no frames available. Call extract_frames first."
 
-    b64 = base64.b64encode(Path(store.sample_frame).read_bytes()).decode()
+    frames = sorted(Path(store.frames_dir).glob("*.jpg"))
+    if not frames:
+        return "ERROR: no frames available. Call extract_frames first."
+
+    # 첫 호출: 10% 지점 프레임, 재시도: 50% 지점 프레임 (다른 장면 샘플링)
+    store.scene_analyze_count += 1
+    idx = len(frames) // 10 if store.scene_analyze_count == 1 else len(frames) // 2
+    frame_path = frames[idx]
+
+    b64 = base64.b64encode(frame_path.read_bytes()).decode()
     prompt = (
         "Classify this video frame.\n"
         "Respond ONLY in JSON: "
@@ -204,7 +213,14 @@ def analyze_scene(job_id: str) -> str:
         ],
         response_format={"type": "json_object"},
     )
-    parsed = json.loads(resp.choices[0].message.content)
+    raw = resp.choices[0].message.content
+    if not raw:
+        store.scene_type = "other"
+        store.expected_pii = []
+        emit_log(job_id, {"step": "tool", "action": "analyze_scene", "result": {"scene_type": "other", "expected_pii": []}})
+        return "scene_type=other, expected_pii=[]. Reasoning: GPT-4o returned empty content."
+
+    parsed = json.loads(raw)
     store.scene_type = parsed.get("scene_type", "other")
     store.expected_pii = [p for p in parsed.get("expected_pii", []) if p in PII_TYPES]
 
@@ -354,14 +370,24 @@ def mask_frames(job_id: str) -> str:
 
 @tool
 def compose_video(job_id: str) -> str:
-    """Stitch the masked frames into an mp4 using ffmpeg. Call AFTER mask_frames.
-    Returns the output video path."""
+    """Stitch masked frames into mp4, or copy original video if no masking was done.
+    Call AFTER mask_frames (if masking was done) or directly after analyze_scene (if no PII)."""
+    import shutil
     store = get_store(job_id)
-    if not store.masked_frames_dir:
-        return "ERROR: masked frames not ready."
     out_dir = settings.output_path / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "output.mp4"
+
+    # PII 없어서 마스킹 안 한 경우 → 원본 영상 복사 (품질 손실 없음)
+    if not store.masked_frames_dir and store.video_path:
+        shutil.copy2(store.video_path, out_path)
+        store.output_video_path = str(out_path)
+        emit_log(job_id, {"step": "tool", "action": "compose_video", "result": {"path": str(out_path), "mode": "copy"}})
+        return f"No masking applied — copied original video to {out_path}."
+
+    if not store.masked_frames_dir:
+        return "ERROR: masked frames not ready. Call mask_frames first."
+
     subprocess.run(
         [
             "ffmpeg", "-framerate", str(settings.SAMPLE_FPS),
@@ -374,8 +400,8 @@ def compose_video(job_id: str) -> str:
         check=True,
     )
     store.output_video_path = str(out_path)
-    emit_log(job_id, {"step": "tool", "action": "compose_video", "result": {"path": str(out_path)}})
-    return f"Composed mp4 at {out_path}."
+    emit_log(job_id, {"step": "tool", "action": "compose_video", "result": {"path": str(out_path), "mode": "encode"}})
+    return f"Composed masked mp4 at {out_path}."
 
 
 def _build_report_pdf(pdf_path: Path, report: dict, masked_frame_path: Path | None) -> None:
